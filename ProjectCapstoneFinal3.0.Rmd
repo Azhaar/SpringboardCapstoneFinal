@@ -1,0 +1,461 @@
+---
+title: 'Predict Probability of Sales on Inbound Call Center Traffic'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+## Project description
+
+This project aims at predicting the sale on next call based on caller's demographic, socio economic data, location and the source of traffic (paid, SEO or affiliate). A sale comprises sale of any combination of cable, internet or phone service to a residential caller in any part of US depending on the availability of service at the caller's address. Call center sales agents have access to order entry tool for almost all the major cable, internet and phone service providers in the country which enables them to sell any provider the caller is looking for. 
+
+Ordering cable, internet and phone services is a complex process that requires customization and selection of many features on callers part and also because the price a customer pays on a monthly basis, varies with the choice of channels selection for a cable product, speed of internet package and in case of phone whether in-state or out-of-state calling is selected or not. People usually need assistance in order to order services and hence call in. 
+
+Before calling, callers generally search online to get an idea of what they should order and who to reach out to in order to get services. The search is mostly carried out on some of the popular search engines such as google, bing, yahoo etc. This particular call center markets its services on these search engines to generate demand and to drive calls to the center. 
+
+Data Source: In order to predict the sales outcome on a call, calls data for May 2016 has been used. Over 440K calls were offered in the call center in May of which about 400K calls got answered. The data is contained in an excel sheet. A summary of variables is obtained by running the summary() command on the read data. 
+
+
+
+```{r load packages and data}
+library(ggplot2)
+library(dplyr)
+library(stringr)
+library(RColorBrewer)
+set.seed(1234)
+
+# Set locale
+Sys.setlocale(locale="C")
+
+calls.may <- read.csv("CallsDataMay2016.csv", header = TRUE, stringsAsFactors = FALSE)
+calls.may <- calls.may[calls.may$Outcome=="CONNECT",]
+
+```
+
+A brief description of the variables in the data set is as follows:
+
+1. Call.Date : Captures the day of month when the call arrived. The dataset has calls answered for all 31 days in May.  
+2. CallStartTime: Time when call started
+3. CallEndTime: Time when call ended
+4. Outcome: This captures whether a call got successfully connected to an agent or not. For this analysis, all connected calls have been taken. This variable does not have any preditive capability and will be dropped.
+5. AgentID: Every agent in the center is assigned a unique ID captured by AgentID field.
+6. TFN : The toll free name dialled by the customer to reach us to order services
+7. BTN : Phone number of the customer
+8. CallSkill : Agents are divided into various skill in the call center. A skill comprises a group of agents who are expert in selling a particular group of services. Some agents are multiskilled. CallSkill is the skill of the agent who answered the call.
+9. OrigianlSkill: In case all agents on a skill are busy, the call is answered by the next available agent on another skill. The agent who was originally supposed to answer the call is captured by OriginalSkill variable. 
+10. CableCompany: THere are 24 skills in the center. 
+11. Affiliate: In addition to generating demand by marketing on search engines, some third party parnters also send traffic to the call center. They use a mix of marketing channels to drive traffic. The name of an affiliate is captured by this variable. The call center's own sources of traffic are grouped under "Digital Globe Services" to differentiate from the rest.
+12. Disposition: At the end of a call the call center agent classifies a call as sales/non-sales calls captured by the disposition variable. To better understand what happened on a call, disposition field helps capture the caller intent. A sale could be a sale of one service (A single play sale), two services (a double play sale), three services (a triple play sale), or four services (a quad play). The revenue generated on a call depends on the number of services sold. 
+
+## Data Cleaning
+
+The disposition of the call depends on a number of factors such as the area the caller was calling from, the affiliate that drove the call, call skill and the TFN. A more detailed explanation of each varilable and cleaning the data is presented below. 
+1. TFN 
+
+
+There are 5,414 unique TFNs in the data set. The number of calls offered on each TFN ranges from 1 call answered to a maximum of 9,991 calls answered. The median number of calls answered is 6 while mean is 75.6 which suggests that some TFNs get a large number of calls while others obtain a few. Disecting this variable a little more shows that 77 out of the 5,414 TFNs have 1000 or more calls.  
+
+
+2. BTN : The BTN field should ideally have customer phone number and be 10 digits long. However, there are many BTNs which have more than 10 digits. There is a leading 1 in most of these TFNs which need to be removed. Also, some BTNs have more than 1 call answered which shows that these are numbers some of the affiliates using to send traffic. These BTNs need to be removed. After removing the calls with 2 or more BTNs, we are left with roughly 325,000 calls.
+
+```{r BTNs Analysis}
+
+calls.may <- calls.may[which(calls.may$BTN != "Unavailable"),]
+calls.may <- calls.may[which(calls.may$BTN != "navailable"),]
+calls.may$BTN <- ifelse(nchar(calls.may$BTN) > 10, 
+                        substr(calls.may$BTN, 
+                               nchar(calls.may$BTN) - 9, 
+                               nchar(calls.may$BTN)), 
+                        calls.may$BTN)
+
+calls.may <- calls.may[-which(grepl("^855|^0|^1",calls.may$BTN)),]
+
+# create a new column to extract area code from BTN
+calls.may$AreaCode <- substr(calls.may$BTN, 1,3)
+
+# Converting all cable company names to lower case to eliminate case issues
+
+calls.may$CableCompany <- str_to_lower(calls.may$CableCompany) 
+
+# Remove all non graphical characters
+calls.may$CableCompany <- str_replace_all(calls.may$CableCompany,"[^[:graph:]]", " ") 
+
+# Trim white spaces
+
+calls.may$CableCompany <- trimws(calls.may$CableCompany, which = "both")
+
+# Fix odd-ball name entries
+calls.may$CableCompany <- ifelse(calls.may$CableCompany=="atlanticbroadband","atlantic broadband",calls.may$CableCompany)
+calls.may$CableCompany[which(calls.may$CableCompany == "att - touchtone technologies")] <- "att-touchtone technologies"  
+calls.may$CableCompany[which(calls.may$CableCompany=="cableone")] <- "cable one"
+calls.may$CableCompany[which(calls.may$CableCompany=="cyh - charter")] <- "cyh-charter"
+calls.may$CableCompany[which(calls.may$CableCompany=="cyh - comcast")] <- "cyh-comcast"
+calls.may$CableCompany[which(calls.may$CableCompany=="cyh-twc")] <- "cyh-time warner"
+calls.may$CableCompany[which(calls.may$CableCompany=="cyh - twc")] <- "cyh-time warner"
+calls.may$CableCompany[which(calls.may$CableCompany=="cyh - time warner")] <- "cyh-time warner"
+calls.may$CableCompany[which(calls.may$CableCompany=="godish.com, ltd.llp")] <-"godish"
+calls.may$CableCompany[which(calls.may$CableCompany=="satcntry")]<-"satellite country"
+calls.may$CableCompany <- ifelse(calls.may$CableCompany=="twc","time warner",calls.may$CableCompany)
+calls.may$CableCompany[which(calls.may$CableCompany=="uni-sat")] <- "uni-sat communications"
+calls.may$CableCompany[which(calls.may$CableCompany=="Wind Stream")] <- "Windstream"
+
+
+```
+ 
+```{r Disposition}
+
+# create the sale/no sale variable to capture just the sale/non-sale outcome
+calls.may$Sale <- ifelse(grepl("Play -", 
+                               calls.may$Disposition, 
+                               ignore.case = T),
+                         "Sale",
+                         "No Sale")
+
+```
+
+The AgentID field shows that there are 689 agents who answered the phones in May. Median number of calls answered was 690. 
+
+```{r AgentID Analysis}
+# Calculating conversion ratio by agent ID.
+AgentID_df <- calls.may %>%
+  group_by(AgentID) %>%
+  summarise(CallsAns=n(), ConvRate = length(Sale[Sale == "Sale"])/length(Sale))
+
+# Plot top 12 agents by volume since the number of agents is huge
+n <- 12
+top_Agents <- AgentID_df %>% 
+  arrange(desc(ConvRate)) %>% 
+  slice(1:n)
+
+# The factor() call sets the levels but creates NAs; the second line
+# replaces NAs with the "other" factor level.
+
+AgentID_df$top_Agents <- factor(AgentID_df$AgentID, levels = c(top_Agents$AgentID, "other"))
+AgentID_df$top_Agents[which(is.na(AgentID_df$top_Agents))] <- "other"
+rm(top_Agents)
+ggplot(AgentID_df, aes(x=ConvRate, fill = top_Agents)) + 
+  geom_histogram(bins = 15) +
+  scale_fill_manual(values = c(brewer.pal(n = n, "Paired"), "grey50"), guide = guide_legend(title = "Agent IDs")) +
+  theme_bw()
+```
+
+The CableCompany field shows 345 cable companies. However, there are many comapnies which have fewer than 10 calls in the whole month. A distribution of the calls answered by CableCompany is shown below. Some Cable Company names need to be cleaned such as converting lower to upper case etc. After cleaning up, the number of Cable Company reduces to 323. 
+
+```{r CableCompany field}
+
+# Calculating conversion ratio by cable company.
+CableCompany_df <- calls.may %>%
+  group_by(CableCompany) %>%
+  summarise(CallsAns=n(), ConvRate = length(Sale[Sale == "Sale"])/length(Sale))
+
+# Plot top 12 cable companies by volume since the number of cable companies is huge
+n <- 12
+top_CableCompanies <- CableCompany_df %>% 
+  arrange(desc(ConvRate)) %>% 
+  slice(1:n)
+
+# The factor() call sets the levels but creates NAs; the second line
+# replaces NAs with the "other" factor level.
+
+CableCompany_df$top_companies <- factor(CableCompany_df$CableCompany, levels = c(top_CableCompanies$CableCompany, "other"))
+CableCompany_df$top_companies[which(is.na(CableCompany_df$top_companies))] <- "other"
+rm(top_CableCompanies)
+ggplot(CableCompany_df, aes(x=ConvRate, fill = top_companies)) + 
+  geom_histogram(bins = 15) +
+  scale_fill_manual(values = c(brewer.pal(n = n, "Paired"), "grey50"), guide = guide_legend(title = "Cable Company")) +
+  theme_bw()
+
+```
+
+The Affiliate field has 89 unique Affiliates. A distribution of calls answered by affiliate and a summary of the field is shown below. Of the 89 affiliates, 40 affiliates have less than 10 calls answered in May. There are 15 affiliates which have more than 500 calls answered.
+```{r Affiliate field}
+
+# Plot conversion ratio for top Affiliates
+
+# Calculating conversion ratio by Affiliates.
+Affiliate_df <- calls.may %>%
+  group_by(Affiliate) %>%
+  summarise(CallsAns=n(), ConvRate = length(Sale[Sale == "Sale"])/length(Sale))
+
+# Plot top 12 affiliates by volume since the number of cable companies is huge
+n <- 12
+top_Affiliates <- Affiliate_df %>% 
+  arrange(desc(ConvRate)) %>% slice(1:n)
+
+Affiliate_df$top_Affiliates <- factor(Affiliate_df$Affiliate, levels = c(top_Affiliates$Affiliate, "other"))
+Affiliate_df$top_Affiliates[which(is.na(Affiliate_df$top_Affiliates))] <- "other"
+rm(top_Affiliates)
+#plot of Affiliate 
+ggplot(Affiliate_df, aes(x=ConvRate, fill = top_Affiliates)) + 
+  geom_histogram(bins = 15) +
+  scale_fill_manual(values = c(brewer.pal(n = n, "Paired"), "grey50"), guide = guide_legend(title = "Affiliates")) +
+  theme_bw()
+
+
+
+```
+
+TFNs vs sales ratio plots
+```{r TFNs}
+# Calculating conversion ratio by TFN
+TFN_df <- calls.may %>%
+  group_by(TFN) %>%
+  summarise(CallsAns=n(), ConvRate = length(Sale[Sale == "Sale"])/length(Sale))
+
+# Plot top 12 TFNs by volume since the number of TFNs is huge
+n <- 12
+top_TFNs <- TFN_df %>% 
+  arrange(desc(ConvRate)) %>% 
+  slice(1:n)
+
+# The factor() call sets the levels but creates NAs; the second line
+# replaces NAs with the "other" factor level.
+
+TFN_df$top_TFNs <- factor(TFN_df$TFN, levels = c(top_TFNs$TFN, "other"))
+TFN_df$top_TFNs[which(is.na(TFN_df$top_TFNs))] <- "other"
+rm(top_TFNs)
+ggplot(TFN_df, aes(x=ConvRate, fill = top_TFNs)) + 
+  geom_histogram(bins = 15) +
+  scale_fill_manual(values = c(brewer.pal(n = n, "Paired"), "grey50"), guide = guide_legend(title = "TFNs")) +
+  theme_bw()
+
+```
+
+Call Skill vs sales ratio plot
+
+```{r Call Skill}
+
+# Calculating conversion ratio by Call Skill
+CallSkill_df <- calls.may %>%
+  group_by(CallSkill) %>%
+  summarise(CallsAns=n(), ConvRate = length(Sale[Sale == "Sale"])/length(Sale))
+
+# Plot top 12 call skills by volume 
+n <- 12
+top_CallSkills <- CallSkill_df %>% 
+  arrange(desc(ConvRate)) %>% 
+  slice(1:n)
+
+# The factor() call sets the levels but creates NAs; the second line
+# replaces NAs with the "other" factor level.
+
+CallSkill_df$top_callskills <- factor(CallSkill_df$CallSkill, levels = c(top_CallSkills$CallSkill, "other"))
+CallSkill_df$top_callskills[which(is.na(CallSkill_df$top_callskills))] <- "other"
+rm(top_CallSkills)
+ggplot(CallSkill_df, aes(x=ConvRate, fill = top_callskills)) + 
+  geom_histogram(bins = 15) +
+  scale_fill_manual(values = c(brewer.pal(n = n, "Paired"), "grey50"), guide = guide_legend(title = "Call Skills")) +
+  theme_bw()
+
+```
+Original Skill vs sales ratio plot
+```{r Original Skill}
+
+# Calculating conversion ratio by Call Skill
+OrigSkill_df <- calls.may %>%
+  group_by(OriginalSkill) %>%
+  summarise(CallsAns=n(), ConvRate = length(Sale[Sale == "Sale"])/length(Sale))
+
+# Plot top 12 call skills by volume 
+n <- 12
+top_OrigSkills <- OrigSkill_df %>% 
+  arrange(desc(ConvRate)) %>% 
+  slice(1:n)
+
+# The factor() call sets the levels but creates NAs; the second line
+# replaces NAs with the "other" factor level.
+
+OrigSkill_df$top_origskills <- factor(OrigSkill_df$OriginalSkill, levels = c(top_OrigSkills$OriginalSkill, "other"))
+OrigSkill_df$top_origskills[which(is.na(OrigSkill_df$top_origskills))] <- "other"
+rm(top_OrigSkills)
+ggplot(OrigSkill_df, aes(x=ConvRate, fill = top_origskills)) + 
+  geom_histogram(bins = 15) +
+  scale_fill_manual(values = c(brewer.pal(n = n, "Paired"), "grey50"), guide = guide_legend(title = "Original Skills")) +
+  theme_bw()
+```
+
+Area Code vs sales conversions plot
+```{r Area Code}
+
+# Calculating conversion ratio by Call Skill
+AreaCode_df <- calls.may %>%
+  group_by(AreaCode) %>%
+  summarise(CallsAns=n(), ConvRate = length(Sale[Sale == "Sale"])/length(Sale))
+
+# Plot top 12 call skills by volume 
+n <- 12
+top_AreaCode <- AreaCode_df %>% 
+  arrange(desc(ConvRate)) %>% 
+  slice(1:n)
+
+# The factor() call sets the levels but creates NAs; the second line
+# replaces NAs with the "other" factor level.
+
+AreaCode_df$top_areacodes <- factor(AreaCode_df$AreaCode, levels = c(top_AreaCode$AreaCode, "other"))
+AreaCode_df$top_areacodes[which(is.na(AreaCode_df$top_areacodes))] <- "other"
+rm(top_AreaCode)
+ggplot(AreaCode_df, aes(x=ConvRate, fill = top_areacodes)) + 
+  geom_histogram(bins = 15) +
+  scale_fill_manual(values = c(brewer.pal(n = n, "Paired"), "grey50"), guide = guide_legend(title = "Area Codes")) +
+  theme_bw()
+
+```
+
+Disposition fields captures the end of call status whether it was a sale or otherwise. Since we are trying to predict whether a call will result in a sale or not and the associated probabilities, the disposition variable to reduced to a sale/no sale variable. 93% of all calls did not result in a sales while sales close rate is roughly 7%. 
+
+
+```{r sales}
+sales.ratio.overall <- prop.table(table(calls.may$Sale))
+print(sales.ratio.overall, digits = 1)
+
+# drop call start,end time and Outcome since they are not required for the analysis
+calls.may<-calls.may[,-c(2,3,4,7,12)]
+```
+
+```{r anova}
+
+#Sample 1000 rows from the data to run anova
+n<-sample(nrow(calls.may),1000)
+calls.maysample <- calls.may[n,]
+
+# convert sale-nosale to binary
+
+calls.maysample$SaleCode<- ifelse(calls.maysample$Sale=="Sale",1,0)
+
+# TJH: start with all factors, then eliminate one-by-one based on p-value.
+# TJH: When all factors are significant to the first order, add in interactions
+# TJH: explicitly, and only where it makes sense to do so based on your understanding
+# TJH: of the sales conversion process.
+# TJH: I come up with the following as significant.
+# TJH: Possibly Affiliate is covarying with both CableCompany and AreaCode, so we
+# TJH: should drop either Affiliate or CableCompany and AreaCode. Given the very low
+# TJH: p-value for Affiliate, my recommendation would be to keep Affiliate.
+#run anova
+anova.calls.maysample<- anova(lm(SaleCode ~ Affiliate+AreaCode , calls.maysample))
+anova.calls.maysample
+
+```
+
+
+```{r Overall Conversion Ratio}
+
+# Percent of each level for factor, Pr(x)
+
+percent.of.CableCompany <- calls.may%>%group_by(CableCompany)%>%summarise(CabCompCount=n())%>%
+  mutate(PercentOfTot = CabCompCount/sum(CabCompCount))%>%select(CableCompany, PercentOfTot)
+percent.of.CableCompany
+
+paste("Percent of Affiliate, Pr(Affiliate)")
+percent.of.Affiliate <- calls.may%>%group_by(Affiliate)%>%summarise(AffiliateCount=n())%>%
+  mutate(PercentOfTot = AffiliateCount/sum(AffiliateCount))%>%select(Affiliate, PercentOfTot)
+percent.of.Affiliate
+
+paste("Percent of AreaCode, Pr(AreaCode)")
+percent.of.AreaCode <- calls.may%>%group_by(AreaCode)%>%summarise(AreaCodeCount=n())%>%
+  mutate(PercentOfTot = AreaCodeCount/sum(AreaCodeCount))%>%select(AreaCode, PercentOfTot)
+percent.of.AreaCode
+
+paste("Percent of Sale , Pr(C)")
+percent.of.Sale <- calls.may%>%group_by(Sale)%>%summarise(SaleCount=n())%>%
+  mutate(PercentOfTot = SaleCount/sum(SaleCount))%>%select(Sale, PercentOfTot)
+percent.of.Sale
+
+```
+Probability of each factor level given conversation rate C
+
+```{r Pr (x | C)}
+
+# Since we know from the ANOVA that only Cable Company, Affiliate and Area Code
+# are significant, we'll only calculate those.
+
+paste("Pr (CableCompany | C)")
+PrCableCompany.Conv <- calls.may%>%filter(Sale=="Sale")%>%group_by(CableCompany)%>%summarise(CallsAns = n())%>%mutate(Prob=CallsAns/sum(CallsAns))%>%select(CableCompany,Prob)
+PrCableCompany.Conv
+
+paste("Pr (Affiliate | C)")
+PrAffiliate.Conv <- calls.may%>%filter(Sale=="Sale")%>%group_by(Affiliate)%>%summarise(CallsAns = n())%>%mutate(Prob=CallsAns/sum(CallsAns))%>%select(Affiliate,Prob)
+PrAffiliate.Conv
+
+paste("Pr(C | AreaCode)")
+paste("Pr (AreaCode | C)")
+PrAreaCode.Conv <- calls.may%>%filter(Sale=="Sale")%>%group_by(AreaCode)%>%summarise(CallsAns = n())%>%mutate(Prob=CallsAns/sum(CallsAns))%>%select(AreaCode,Prob)
+PrAreaCode.Conv
+
+PrCableCompany.Convtest <- calls.may %>% filter(Sale=="Sale")%>%
+  group_by(CableCompany) %>%
+  summarise(CallsAns = n()) %>%
+  mutate(Prob = CallsAns/sum(CallsAns), n = CallsAns,
+         z = qnorm((1 + 0.90)/2),
+         YATES = min(0.5, abs(Prob - (n * 0.5))),
+         z22n = z^2/(2 * n),
+         p.c1 = Prob/n + YATES/n,
+         upper = ifelse (p.c1 >= 1,1,p.c1 + z22n + z * sqrt(p.c1 * (1 - p.c1)/n + z22n/(2 *n))/(1 + 2 * z22n)),
+         p.c2 = Prob/n - YATES/n,
+         lower = ifelse (p.c2 <= 0,0,p.c2 + z22n - z * sqrt(p.c2 * (1 - p.c2)/n + z22n/(2 * n))/(1 + 2 * z22n)),range = upper - lower) %>%
+  select(CableCompany,Prob, n, lower, upper, range,YATES,p.c1,p.c2)
+PrCableCompany.Conv
+PrCableCompany.Convtest
+
+PrAreaCode.Convtest <- calls.may %>% filter(Sale=="Sale")%>%
+  group_by(AreaCode) %>%
+  summarise(CallsAns = n()) %>%
+  mutate(Prob = CallsAns/sum(CallsAns), n = CallsAns,
+         z = qnorm((1 + 0.90)/2),
+         YATES = min(0.5, abs(Prob - n * 0.5)),
+         z22n = z^2/(2 * n),
+         p.c1 = Prob/n + YATES/n,
+         upper = ifelse (p.c1 >= 1,1,p.c1 + z22n + z * sqrt(p.c1 * (1 - p.c1)/n + z22n/(2 *n))/(1 + 2 * z22n)),
+         p.c2 = Prob/n - YATES/n,
+         lower = ifelse (p.c2 <= 0,0,p.c2 + z22n - z * sqrt(p.c2 * (1 - p.c2)/n + z22n/(2 * n))/(1 + 2 * z22n)),range = upper - lower) %>%
+  select(AreaCode,Prob, n, lower, upper, range,YATES,p.c1,p.c2)
+PrAreaCode.Convtest
+
+PrAffiliate.Convtest <- calls.may %>% filter(Sale=="Sale")%>%
+  group_by(Affiliate) %>%
+  summarise(CallsAns = n()) %>%
+  mutate(Prob = CallsAns/sum(CallsAns), n = CallsAns,
+         z = qnorm((1 + 0.90)/2),
+         YATES = min(0.5, abs(Prob - n * 0.5)),
+         z22n = z^2/(2 * n),
+         p.c1 = Prob/n + YATES/n,
+         upper = ifelse (p.c1 >= 1,1,p.c1 + z22n + z * sqrt(p.c1 * (1 - p.c1)/n + z22n/(2 *n))/(1 + 2 * z22n)),
+         p.c2 = Prob/n - YATES/n,
+         lower = ifelse (p.c2 <= 0,0,p.c2 + z22n - z * sqrt(p.c2 * (1 - p.c2)/n + z22n/(2 * n))/(1 + 2 * z22n)),range = upper - lower) %>%
+  select(Affiliate,Prob, n, lower, upper, range,YATES,p.c1,p.c2)
+```
+
+Calculate Bayesian probability for a specific call
+
+```{r}
+#Probability of overall conversion Pr(C)
+salerate = percent.of.Sale$PercentOfTot[2]
+
+
+#Probability of CableCompany conversion Pr(Conv | CableCompany)
+PrConv.given.CableCompany <- merge(PrCableCompany.Conv, percent.of.CableCompany)
+PrConv.given.CableCompany <- PrConv.given.CableCompany%>%mutate(BayesProb=Prob*salerate/PercentOfTot)
+
+#Probability of Affiliate conversion Pr(Conv | Affiliate)
+PrConv.given.Affiliate <- merge(PrAffiliate.Conv, percent.of.Affiliate)
+PrConv.given.Affiliate <- PrConv.given.Affiliate%>%mutate(BayesProb=Prob*salerate/PercentOfTot)
+
+#Probability of AreaCode conversion Pr(Conv | AreaCode)
+PrConv.given.AreaCode <- merge(PrAreaCode.Conv, percent.of.AreaCode)
+PrConv.given.AreaCode <- PrConv.given.AreaCode%>%mutate(BayesProb=Prob*salerate/PercentOfTot)
+
+
+```
+
+Function to predict probability of sale in real time 
+
+```{r Probability of sale function}
+
+prob.of.sale<-function(AreaCode, Affiliate){
+  prob <- PrConv.given.AreaCode$BayesProb[PrConv.given.AreaCode$AreaCode==AreaCode]*100+PrConv.given.Affiliate$BayesProb[PrConv.given.Affiliate$Affiliate==Affiliate]*100
+  paste(round(prob/2,2),"%")
+}
+
+```
+
